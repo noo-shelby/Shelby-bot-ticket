@@ -16,8 +16,8 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message],
 });
 
-// ── READY ──
-client.once('ready', () => {
+// ── READY (corrigido: clientReady) ──
+client.once('clientReady', () => {
   console.log(`[Bot] Logado como ${client.user.tag}`);
   console.log(`[Bot] Servidores: ${client.guilds.cache.size}`);
   startAutoClose(client);
