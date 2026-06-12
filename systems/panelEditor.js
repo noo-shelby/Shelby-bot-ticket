@@ -1,14 +1,14 @@
 const {
-  EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder
+  EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
+  StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
 } = require('discord.js');
 const { getPanels, getPanel, savePanel, deletePanel } = require('../utils/dataManager');
 const { canManagePanels } = require('../utils/permissions');
 const { errorEmbed, successEmbed } = require('../utils/embeds');
-const { startPanelCreation, handleBuilderInteraction } = require('./panelBuilder');
 
-/**
- * Lista todos os painéis salvos
- */
+// ─────────────────────────────────────────
+// LISTAR PAINÉIS
+// ─────────────────────────────────────────
 async function listPanels(interaction) {
   if (!canManagePanels(interaction.member)) {
     return interaction.reply({ embeds: [errorEmbed('Você não tem permissão.')], ephemeral: true });
@@ -19,114 +19,82 @@ async function listPanels(interaction) {
 
   if (entries.length === 0) {
     return interaction.reply({
-      embeds: [new EmbedBuilder().setColor(0xFEE75C).setDescription('📭 Nenhum painel criado ainda. Use `/criar-painel`.')],
+      embeds: [new EmbedBuilder().setColor(0xFEE75C).setDescription('📭 Nenhum painel criado. Use `/criar-painel`.')],
       ephemeral: true,
     });
   }
 
-  const embed = new EmbedBuilder()
-    .setColor(0x5865F2)
-    .setTitle('📋 Painéis Salvos')
-    .setDescription(
-      entries.map(([id, p]) =>
-        `**${p.name}** • \`${id}\`\n> ${p.options.length} opção(ões) • ${p.channelType === 'thread' ? 'Fórum' : 'Canal'}`
-      ).join('\n\n')
-    );
+  const embed = new EmbedBuilder().setColor(0x5865F2).setTitle('📋 Painéis Salvos')
+    .setDescription(entries.map(([id, p]) =>
+      `**${p.name}** • \`${id}\`\n> ${p.options?.length || 0} opção(ões) • ${p.channelType === 'thread' ? 'Fórum' : 'Canal'}`
+    ).join('\n\n'));
+
+  // Select menu com os painéis
+  const options = entries.slice(0, 25).map(([id, p]) => ({
+    label: p.name.substring(0, 100),
+    value: id,
+    description: `ID: ${id}`,
+  }));
 
   const select = new StringSelectMenuBuilder()
-    .setCustomId('pe_select_panel')
-    .setPlaceholder('Selecione um painel para gerenciar...')
-    .addOptions(
-      entries.slice(0, 25).map(([id, p]) => ({
-        label: p.name,
-        value: id,
-        description: `ID: ${id} • ${p.options.length} opção(ões)`,
-      }))
-    );
+    .setCustomId('pe_select')
+    .setPlaceholder('Selecione um painel...')
+    .addOptions(options);
 
-  return interaction.reply({
-    embeds: [embed],
-    components: [new ActionRowBuilder().addComponents(select)],
-    ephemeral: true,
-  });
+  const payload = { embeds: [embed], components: [new ActionRowBuilder().addComponents(select)], ephemeral: true };
+
+  if (interaction.isStringSelectMenu() || interaction.isButton()) {
+    return interaction.update(payload);
+  }
+  return interaction.reply(payload);
 }
 
-/**
- * Menu de gerenciamento de painel específico
- */
-async function managePanelMenu(interaction, panelId) {
+// ─────────────────────────────────────────
+// MENU DE UM PAINEL
+// ─────────────────────────────────────────
+async function showPanelMenu(interaction, panelId) {
   const panel = getPanel(panelId);
   if (!panel) return interaction.update({ embeds: [errorEmbed('Painel não encontrado.')], components: [] });
 
-  const embed = new EmbedBuilder()
-    .setColor(panel.color || 0x5865F2)
-    .setTitle(`⚙️ Gerenciar: ${panel.name}`)
+  const embed = new EmbedBuilder().setColor(panel.color || 0x5865F2)
+    .setTitle(`⚙️ ${panel.name}`)
     .setDescription(`ID: \`${panelId}\``)
     .addFields(
       { name: '📡 Tipo', value: panel.channelType === 'thread' ? 'Tópico de Fórum' : 'Canal de Texto', inline: true },
-      { name: '🎛️ Opções', value: String(panel.options.length), inline: true },
+      { name: '🎛️ Opções', value: String(panel.options?.length || 0), inline: true },
+      { name: '📦 Containers', value: String(panel.containers?.length || 0), inline: true },
       { name: '📋 Log', value: panel.logChannelId ? `<#${panel.logChannelId}>` : '*Não conf.*', inline: true },
     );
 
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`pe_edit_${panelId}`).setLabel('Editar').setEmoji('✏️').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`pe_send_${panelId}`).setLabel('Enviar').setEmoji('📤').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`pe_delete_${panelId}`).setLabel('Deletar').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId('pe_back_list').setLabel('Voltar').setEmoji('◀️').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`pe_send_${panelId}`).setLabel('📤 Enviar').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`pe_delete_${panelId}`).setLabel('🗑️ Deletar').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('pe_back').setLabel('◀️ Voltar').setStyle(ButtonStyle.Secondary),
   );
 
   return interaction.update({ embeds: [embed], components: [row] });
 }
 
-/**
- * Confirma deleção de painel
- */
-async function confirmDeletePanel(interaction, panelId) {
-  const panel = getPanel(panelId);
-  if (!panel) return interaction.update({ embeds: [errorEmbed('Painel não encontrado.')], components: [] });
-
-  return interaction.update({
-    embeds: [
-      new EmbedBuilder()
-        .setColor(0xFF4444)
-        .setTitle('🗑️ Deletar Painel')
-        .setDescription(`Tem certeza que deseja deletar o painel **${panel.name}**?\n\n⚠️ Esta ação é irreversível.`)
-    ],
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`pe_delete_confirm_${panelId}`).setLabel('Confirmar Deleção').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId(`pe_manage_${panelId}`).setLabel('Cancelar').setStyle(ButtonStyle.Secondary),
-      )
-    ]
-  });
-}
-
-async function executeDeletePanel(interaction, panelId) {
-  const panel = getPanel(panelId);
-  const name = panel?.name || panelId;
-  deletePanel(panelId);
-
-  return interaction.update({
-    embeds: [successEmbed(`Painel **${name}** deletado com sucesso.`)],
-    components: [],
-  });
-}
-
-/**
- * Envia o painel para um canal (constrói os componentes V2)
- */
+// ─────────────────────────────────────────
+// ENVIAR PAINEL
+// ─────────────────────────────────────────
 async function sendPanelToChannel(interaction, panelId) {
   if (!canManagePanels(interaction.member)) {
-    return interaction.reply({ embeds: [errorEmbed('Você não tem permissão.')], ephemeral: true });
+    const reply = { embeds: [errorEmbed('Você não tem permissão.')], ephemeral: true };
+    if (interaction.replied || interaction.deferred) return interaction.followUp(reply);
+    return interaction.reply(reply);
   }
 
   const panel = getPanel(panelId);
-  if (!panel) return interaction.reply({ embeds: [errorEmbed('Painel não encontrado.')], ephemeral: true });
+  if (!panel) {
+    const reply = { embeds: [errorEmbed('Painel não encontrado.')], ephemeral: true };
+    if (interaction.replied || interaction.deferred) return interaction.followUp(reply);
+    return interaction.reply(reply);
+  }
 
-  const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
   const modal = new ModalBuilder()
     .setCustomId(`pe_send_submit_${panelId}`)
-    .setTitle(`Enviar Painel: ${panel.name}`);
+    .setTitle(`Enviar: ${panel.name.substring(0,40)}`);
 
   modal.addComponents(
     new ActionRowBuilder().addComponents(
@@ -142,9 +110,6 @@ async function sendPanelToChannel(interaction, panelId) {
   return interaction.showModal(modal);
 }
 
-/**
- * Executa o envio do painel após modal
- */
 async function executeSendPanel(interaction, panelId) {
   await interaction.deferReply({ ephemeral: true });
 
@@ -160,30 +125,63 @@ async function executeSendPanel(interaction, panelId) {
     await buildPanelMessage(channel, panel, panelId);
     await interaction.editReply({ embeds: [successEmbed(`Painel **${panel.name}** enviado para <#${channelId}>!`)] });
   } catch (err) {
-    console.error('[SendPanel]', err);
-    await interaction.editReply({ embeds: [errorEmbed('Erro ao enviar o painel.')] });
+    console.error('[PanelEditor] Erro ao enviar:', err);
+    await interaction.editReply({ embeds: [errorEmbed(`Erro ao enviar o painel: ${err.message}`)] });
   }
 }
 
-/**
- * Processa interações do editor
- */
+// ─────────────────────────────────────────
+// DELETAR PAINEL
+// ─────────────────────────────────────────
+async function confirmDelete(interaction, panelId) {
+  const panel = getPanel(panelId);
+  if (!panel) return interaction.update({ embeds: [errorEmbed('Painel não encontrado.')], components: [] });
+
+  return interaction.update({
+    embeds: [new EmbedBuilder().setColor(0xFF4444).setTitle('🗑️ Deletar Painel')
+      .setDescription(`Tem certeza que deseja deletar **${panel.name}**?\n⚠️ Irreversível.`)],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`pe_delete_confirm_${panelId}`).setLabel('Confirmar').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`pe_panel_${panelId}`).setLabel('Cancelar').setStyle(ButtonStyle.Secondary),
+    )],
+  });
+}
+
+async function executeDelete(interaction, panelId) {
+  const panel = getPanel(panelId);
+  const name = panel?.name || panelId;
+  deletePanel(panelId);
+  return interaction.update({ embeds: [successEmbed(`Painel **${name}** deletado.`)], components: [] });
+}
+
+// ─────────────────────────────────────────
+// ROUTER
+// ─────────────────────────────────────────
 async function handleEditorInteraction(interaction) {
-  const customId = interaction.customId;
+  const id = interaction.customId;
 
-  if (customId === 'pe_select_panel') {
-    const panelId = interaction.values[0];
-    return managePanelMenu(interaction, panelId);
+  if (!id.startsWith('pe_')) return false;
+
+  try {
+    if (id === 'pe_select') {
+      return showPanelMenu(interaction, interaction.values[0]);
+    }
+    if (id === 'pe_back') return listPanels(interaction);
+    if (id.startsWith('pe_panel_')) return showPanelMenu(interaction, id.replace('pe_panel_', ''));
+    if (id.startsWith('pe_send_') && !id.includes('submit')) return sendPanelToChannel(interaction, id.replace('pe_send_', ''));
+    if (id.startsWith('pe_send_submit_')) return executeSendPanel(interaction, id.replace('pe_send_submit_', ''));
+    if (id.startsWith('pe_delete_confirm_')) return executeDelete(interaction, id.replace('pe_delete_confirm_', ''));
+    if (id.startsWith('pe_delete_')) return confirmDelete(interaction, id.replace('pe_delete_', ''));
+  } catch (err) {
+    console.error('[PanelEditor] Erro:', err);
+    try {
+      const reply = { embeds: [errorEmbed('Erro no editor de painéis.')], ephemeral: true };
+      if (interaction.replied || interaction.deferred) await interaction.followUp(reply).catch(()=>{});
+      else await interaction.reply(reply).catch(()=>{});
+    } catch {}
   }
-  if (customId === 'pe_back_list') return listPanels(interaction);
 
-  if (customId.startsWith('pe_manage_')) return managePanelMenu(interaction, customId.replace('pe_manage_', ''));
-  if (customId.startsWith('pe_send_') && !customId.includes('submit')) return sendPanelToChannel(interaction, customId.replace('pe_send_', ''));
-  if (customId.startsWith('pe_send_submit_')) return executeSendPanel(interaction, customId.replace('pe_send_submit_', ''));
-  if (customId.startsWith('pe_delete_confirm_')) return executeDeletePanel(interaction, customId.replace('pe_delete_confirm_', ''));
-  if (customId.startsWith('pe_delete_')) return confirmDeletePanel(interaction, customId.replace('pe_delete_', ''));
-
-  return false;
+  return true;
 }
 
-module.exports = { listPanels, managePanelMenu, handleEditorInteraction };
+module.exports = { listPanels, sendPanelToChannel, handleEditorInteraction };

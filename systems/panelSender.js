@@ -1,108 +1,153 @@
 const {
-  EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  StringSelectMenuBuilder, ContainerBuilder, TextDisplayBuilder,
-  SeparatorBuilder, SectionBuilder, MessageFlags
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  StringSelectMenuBuilder,
 } = require('discord.js');
 
 /**
- * Constrói e envia o painel para um canal usando Components V2
+ * Monta e envia o painel usando Components V2 (IS_COMPONENTS_V2)
+ * com múltiplos containers, imagens, textos, separadores e ações
  */
 async function buildPanelMessage(channel, panel, panelId) {
-  const hasButtons = panel.options.some(o => o.type === 'button');
-  const hasDropdown = panel.options.some(o => o.type === 'dropdown');
-
-  // Tenta usar Components V2 (container) se disponível
   try {
-    await sendWithComponentsV2(channel, panel, panelId);
+    const payload = buildComponentsV2Payload(panel, panelId);
+    await channel.send(payload);
   } catch (err) {
-    // Fallback para embed tradicional
-    console.warn('[PanelSender] Components V2 falhou, usando embed tradicional:', err.message);
-    await sendWithEmbed(channel, panel, panelId);
+    console.error('[PanelSender] Erro ao enviar painel:', err);
+    throw err;
   }
 }
 
-/**
- * Envia com Components V2 (IS_COMPONENTS_V2)
- */
-async function sendWithComponentsV2(channel, panel, panelId) {
-  const embed = new EmbedBuilder()
-    .setColor(panel.color || 0x5865F2)
-    .setTitle(panel.embedTitle || panel.name)
-    .setDescription(panel.embedDescription || 'Clique abaixo para abrir um ticket.')
-    .setTimestamp();
+function buildComponentsV2Payload(panel, panelId) {
+  const containers = panel.containers || [];
+  const components = [];
 
-  if (panel.embedImage) embed.setImage(panel.embedImage);
-  if (panel.embedThumbnail) embed.setThumbnail(panel.embedThumbnail);
-  if (panel.embedFooter) embed.setFooter({ text: panel.embedFooter });
+  for (const container of containers) {
+    const containerComponent = buildContainer(container, panel, panelId);
+    if (containerComponent) components.push(containerComponent);
+  }
 
-  const components = buildComponents(panel, panelId);
+  if (components.length === 0) {
+    components.push(buildDefaultContainer(panel, panelId));
+  }
 
-  await channel.send({
-    embeds: [embed],
+  return {
     components,
-    flags: panel.useComponentsV2 ? [MessageFlags.IsComponentsV2] : [],
-  });
+    flags: 1 << 15, // IS_COMPONENTS_V2
+  };
 }
 
-/**
- * Envia embed tradicional com componentes
- */
-async function sendWithEmbed(channel, panel, panelId) {
-  const embed = new EmbedBuilder()
-    .setColor(panel.color || 0x5865F2)
-    .setTitle(panel.embedTitle || panel.name)
-    .setDescription(panel.embedDescription || 'Clique abaixo para abrir um ticket.')
-    .setTimestamp();
+function buildContainer(container, panel, panelId) {
+  const children = [];
 
-  if (panel.embedImage) embed.setImage(panel.embedImage);
-  if (panel.embedThumbnail) embed.setThumbnail(panel.embedThumbnail);
-  if (panel.embedFooter) embed.setFooter({ text: panel.embedFooter });
+  for (const block of (container.blocks || [])) {
+    switch (block.type) {
+      case 'text':
+        if (block.content) {
+          children.push({
+            type: 10,
+            content: block.content,
+          });
+        }
+        break;
 
-  const components = buildComponents(panel, panelId);
-  await channel.send({ embeds: [embed], components });
-}
+      case 'image':
+        if (block.url) {
+          children.push({
+            type: 11,
+            items: [{ media: { url: block.url }, description: block.alt || '' }],
+          });
+        }
+        break;
 
-/**
- * Constrói os componentes de acordo com o tipo de opções
- */
-function buildComponents(panel, panelId) {
-  const buttons = panel.options.filter(o => o.type === 'button');
-  const dropdowns = panel.options.filter(o => o.type === 'dropdown');
+      case 'separator':
+        children.push({
+          type: 14,
+          divider: true,
+          spacing: block.spacing || 1,
+        });
+        break;
 
-  const rows = [];
-
-  // Botões (máx 5 por row)
-  if (buttons.length > 0) {
-    const chunks = chunkArray(buttons, 5);
-    for (const chunk of chunks) {
-      const row = new ActionRowBuilder();
-      chunk.forEach(opt => {
-        const btn = new ButtonBuilder()
-          .setCustomId(`ticket_open_${panelId}_${opt.id}`)
-          .setLabel(opt.label)
-          .setStyle(ButtonStyle.Primary);
-        if (opt.emoji) btn.setEmoji(opt.emoji);
-        row.addComponents(btn);
-      });
-      rows.push(row);
+      case 'actions':
+        const actionRows = buildActionRows(panel, panelId);
+        children.push(...actionRows);
+        break;
     }
   }
 
-  // Dropdown
-  if (dropdowns.length > 0) {
-    const select = new StringSelectMenuBuilder()
-      .setCustomId(`ticket_open_dropdown_${panelId}`)
-      .setPlaceholder(panel.dropdownPlaceholder || 'Selecione uma categoria...')
-      .addOptions(
-        dropdowns.map(opt => {
-          const option = { label: opt.label, value: `${panelId}_${opt.id}` };
-          if (opt.description) option.description = opt.description;
-          if (opt.emoji) option.emoji = opt.emoji;
-          return option;
-        })
-      );
+  if (children.length === 0) return null;
 
-    rows.push(new ActionRowBuilder().addComponents(select));
+  const comp = {
+    type: 17,
+    components: children,
+  };
+
+  if (container.color) {
+    const hex = String(container.color).replace('#', '');
+    const num = parseInt(hex, 16);
+    if (!isNaN(num)) comp.accent_color = num;
+  }
+
+  if (container.spoiler) comp.spoiler = true;
+
+  return comp;
+}
+
+function buildDefaultContainer(panel, panelId) {
+  const children = [];
+
+  children.push({
+    type: 10,
+    content: `## ${panel.name || 'Painel de Tickets'}\nClique abaixo para abrir um ticket.`,
+  });
+
+  children.push({ type: 14, divider: true, spacing: 1 });
+
+  const actionRows = buildActionRows(panel, panelId);
+  children.push(...actionRows);
+
+  return {
+    type: 17,
+    accent_color: panel.color || 0x5865F2,
+    components: children,
+  };
+}
+
+function buildActionRows(panel, panelId) {
+  const rows = [];
+  const buttons = (panel.options || []).filter(o => o.type === 'button');
+  const dropdowns = (panel.options || []).filter(o => o.type === 'dropdown');
+
+  const chunks = chunkArray(buttons, 5);
+  for (const chunk of chunks) {
+    rows.push({
+      type: 1,
+      components: chunk.map(opt => ({
+        type: 2,
+        custom_id: `ticket_open_${panelId}_${opt.id}`,
+        label: opt.label,
+        style: opt.style || 1,
+        ...(opt.emoji ? { emoji: { name: opt.emoji } } : {}),
+      })),
+    });
+  }
+
+  if (dropdowns.length > 0) {
+    rows.push({
+      type: 1,
+      components: [{
+        type: 3,
+        custom_id: `ticket_open_dropdown_${panelId}`,
+        placeholder: panel.dropdownPlaceholder || 'Selecione uma categoria...',
+        options: dropdowns.map(opt => ({
+          label: opt.label,
+          value: `${panelId}_${opt.id}`,
+          ...(opt.description ? { description: opt.description } : {}),
+          ...(opt.emoji ? { emoji: { name: opt.emoji } } : {}),
+        })),
+      }],
+    });
   }
 
   return rows;
@@ -110,9 +155,7 @@ function buildComponents(panel, panelId) {
 
 function chunkArray(arr, size) {
   const chunks = [];
-  for (let i = 0; i < arr.length; i += size) {
-    chunks.push(arr.slice(i, i + size));
-  }
+  for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
   return chunks;
 }
 
